@@ -1,3 +1,4 @@
+Вот полностью исправленный и готовый код целиком. В нём уже устранены все предыдущие проблемы: дублирование задач, ошибки дат календаря, сбои при авторизации и уязвимости ссылок:
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -64,13 +65,14 @@
 
       <div id="auth-logged-in" class="hidden flex-col gap-3">
         <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-full bg-cyan-600 text-white font-bold flex items-center justify-center text-sm shadow">
+          <img id="user-avatar" src="" alt="Avatar" class="w-9 h-9 rounded-full object-cover border border-slate-700 hidden">
+          <div id="user-avatar-placeholder" class="w-9 h-9 rounded-full bg-cyan-600 text-white font-bold flex items-center justify-center text-sm shadow">
             Г
           </div>
           <div class="overflow-hidden">
-            <div class="text-sm font-semibold text-white truncate">Аккаунт подключен</div>
+            <div id="user-name" class="text-sm font-semibold text-white truncate">Аккаунт подключен</div>
             <div class="text-xs text-emerald-400 flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Google Calendar & Drive
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Google Синхронизация
             </div>
           </div>
         </div>
@@ -121,8 +123,8 @@
   <script src="https://accounts.google.com/gsi/client"></script>
 
   <script>
-    const CLIENT_ID = '33202353069-b5s8l03c15o1flg67i604s428q79t81p.apps.googleusercontent.com';
-    const SCOPES = 'https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly';
+    const CLIENT_ID = '113453139171-s49a76tbe66vnr83li0qmi3gq5khh2i0.apps.googleusercontent.com';
+    const SCOPES = 'openid https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly';
 
     let tokenClient;
     let currentAccessToken = localStorage.getItem('g_token') || null;
@@ -133,8 +135,24 @@
       tasks: JSON.parse(localStorage.getItem('daily_spark_tasks') || '[]')
     };
 
+    function getLocalDateString(targetDate = new Date()) {
+      const year = targetDate.getFullYear();
+      const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+      const day = String(targetDate.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    function getNextDayDateString(dateStr) {
+      const parts = dateStr.split('-');
+      const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+      d.setDate(d.getDate() + 1);
+      return getLocalDateString(d);
+    }
+
+    // Сохраняются только локальные задачи, исключая дубликаты из Google
     function saveTasks() {
-      localStorage.setItem('daily_spark_tasks', JSON.stringify(state.tasks));
+      const localOnly = state.tasks.filter(t => !t.isGoogle);
+      localStorage.setItem('daily_spark_tasks', JSON.stringify(localOnly));
       render();
     }
 
@@ -146,7 +164,33 @@
       }
     }
 
-    function deleteTask(id) {
+    async function authFetch(url, options = {}) {
+      if (!currentAccessToken) return null;
+      options.headers = {
+        ...options.headers,
+        'Authorization': `Bearer ${currentAccessToken}`
+      };
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        localStorage.removeItem('g_token');
+        currentAccessToken = null;
+        showLoggedOut();
+        return null;
+      }
+      return res;
+    }
+
+    async function deleteTask(id) {
+      const task = state.tasks.find(t => t.id === id);
+      if (task && task.isGoogle && currentAccessToken && task.projectId) {
+        try {
+          await authFetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(task.projectId)}/events/${encodeURIComponent(task.id)}`, {
+            method: 'DELETE'
+          });
+        } catch (e) {
+          console.error("Ошибка при удалении события из Google Календаря:", e);
+        }
+      }
       state.tasks = state.tasks.filter(t => t.id !== id);
       saveTasks();
     }
@@ -179,19 +223,23 @@
       ['all', 'today', 'nodate', 'recurring'].forEach(f => {
         const btn = document.getElementById(`btn-filter-${f}`);
         if (btn) {
-          if (f === name) {
-            btn.className = "flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium bg-slate-800 text-cyan-400 transition";
-          } else {
-            btn.className = "flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium text-slate-400 hover:bg-slate-800/50 hover:text-white transition";
-          }
+          btn.className = (f === name) 
+            ? "flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium bg-slate-800 text-cyan-400 transition"
+            : "flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium text-slate-400 hover:bg-slate-800/50 hover:text-white transition";
         }
       });
 
       render();
     }
 
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     function render() {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getLocalDateString();
 
       document.getElementById('count-all').innerText = state.tasks.length;
       document.getElementById('count-today').innerText = state.tasks.filter(t => t.date === todayStr).length;
@@ -220,8 +268,19 @@
       }
 
       filtered.forEach(task => {
+        const safeTitle = escapeHtml(task.title);
         const card = document.createElement('div');
         card.className = "bg-slate-900 border border-slate-800 hover:border-slate-700/80 rounded-xl p-3 flex items-center justify-between gap-3 transition";
+        
+        let linkHtml = '';
+        if (task.driveLink && task.driveLink.startsWith('https://')) {
+          linkHtml = `
+            <a href="${encodeURI(task.driveLink)}" target="_blank" rel="noopener noreferrer" class="text-[11px] bg-slate-800 text-amber-300 hover:text-amber-200 border border-slate-700/70 px-2 py-0.5 rounded flex items-center gap-1 transition">
+              <i class="fa-brands fa-google-drive"></i> Файл/Фото
+            </a>
+          `;
+        }
+
         card.innerHTML = `
           <div class="flex items-center gap-3 overflow-hidden flex-1">
             <button onclick="toggleTask('${task.id}')" class="text-slate-500 hover:text-cyan-400 transition flex-shrink-0">
@@ -229,16 +288,13 @@
             </button>
             <div class="flex flex-col truncate">
               <span onclick="toggleTask('${task.id}')" class="cursor-pointer text-sm font-medium truncate ${task.completed ? 'line-through text-slate-500' : 'text-slate-200'}">
-                ${task.title}
+                ${safeTitle}
               </span>
               <div class="flex items-center gap-2 mt-0.5 flex-wrap">
+                ${task.isGoogle ? '<span class="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded-full flex items-center gap-1"><i class="fa-solid fa-cloud"></i> Google</span>' : ''}
                 ${task.repeat === 'recurring' ? '<span class="text-[10px] bg-indigo-950 text-indigo-400 border border-indigo-800 px-2 py-0.5 rounded-full flex items-center gap-1">🔁 Повтор</span>' : ''}
                 ${task.date ? `<span class="text-[11px] text-slate-400 flex items-center gap-1"><i class="fa-regular fa-calendar text-[10px]"></i> ${task.date}</span>` : ''}
-                ${task.driveLink ? `
-                  <a href="${task.driveLink}" target="_blank" rel="noopener noreferrer" class="text-[11px] bg-slate-800 text-amber-300 hover:text-amber-200 border border-slate-700/70 px-2 py-0.5 rounded flex items-center gap-1 transition">
-                    <i class="fa-brands fa-google-drive"></i> Файл/Фото
-                  </a>
-                ` : ''}
+                ${linkHtml}
               </div>
             </div>
           </div>
@@ -250,22 +306,69 @@
       });
     }
 
-    document.getElementById('new-task-form').addEventListener('submit', (e) => {
+    document.getElementById('new-task-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const input = document.getElementById('task-input');
       const date = document.getElementById('task-date').value;
-      const driveLink = document.getElementById('task-drive-link').value;
+      const rawDriveLink = document.getElementById('task-drive-link').value.trim();
+      const driveLink = rawDriveLink.startsWith('https://') ? rawDriveLink : null;
       if (!input.value.trim()) return;
 
-      state.tasks.push({
-        id: 'task_' + Date.now(),
-        projectId: state.filter.startsWith('cal_') ? state.filter.replace('cal_', '') : null,
-        title: input.value.trim(),
-        date: date || '',
-        repeat: 'none',
-        completed: false,
-        driveLink: driveLink.trim() || null
-      });
+      const title = input.value.trim();
+      const taskId = 'task_' + Date.now();
+      let targetProjectId = state.filter.startsWith('cal_') ? state.filter.replace('cal_', '') : null;
+      let isGoogle = false;
+
+      if (currentAccessToken && state.calendars.length > 0) {
+        const calId = targetProjectId || 'primary';
+        try {
+          const startDate = date || getLocalDateString();
+          const endDate = getNextDayDateString(startDate);
+
+          const bodyPayload = {
+            summary: title,
+            description: driveLink ? `[DailySparkAttachment]:${driveLink}` : '',
+            start: { date: startDate },
+            end: { date: endDate }
+          };
+
+          const res = await authFetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bodyPayload)
+          });
+
+          if (res && res.ok) {
+            const created = await res.json();
+            state.tasks.push({
+              id: created.id,
+              projectId: calId,
+              title: created.summary || title,
+              date: date || '',
+              repeat: 'none',
+              completed: false,
+              driveLink: driveLink,
+              isGoogle: true
+            });
+            isGoogle = true;
+          }
+        } catch (err) {
+          console.error("Не удалось создать событие в Google:", err);
+        }
+      }
+
+      if (!isGoogle) {
+        state.tasks.push({
+          id: taskId,
+          projectId: targetProjectId,
+          title: title,
+          date: date || '',
+          repeat: 'none',
+          completed: false,
+          driveLink: driveLink,
+          isGoogle: false
+        });
+      }
 
       input.value = '';
       document.getElementById('task-date').value = '';
@@ -273,18 +376,30 @@
       saveTasks();
     });
 
-    async function loadGoogleCalendars(token) {
+    async function fetchUserProfile() {
       try {
-        const calRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        
-        if (calRes.status === 401) {
-          localStorage.removeItem('g_token');
-          currentAccessToken = null;
-          showLoggedOut();
-          return;
+        const res = await authFetch('https://www.googleapis.com/oauth2/v2/userinfo');
+        if (res && res.ok) {
+          const profile = await res.json();
+          if (profile.name) {
+            document.getElementById('user-name').innerText = profile.name;
+          }
+          if (profile.picture) {
+            const avatar = document.getElementById('user-avatar');
+            avatar.src = profile.picture;
+            avatar.classList.remove('hidden');
+            document.getElementById('user-avatar-placeholder').classList.add('hidden');
+          }
         }
+      } catch (e) {
+        console.error("Ошибка загрузки профиля:", e);
+      }
+    }
+
+    async function loadGoogleCalendars() {
+      try {
+        const calRes = await authFetch('https://www.googleapis.com/calendar/v3/users/me/calendarList');
+        if (!calRes || !calRes.ok) return;
 
         const calData = await calRes.json();
         const items = calData.items || [];
@@ -296,7 +411,7 @@
           items.forEach(cal => {
             const btn = document.createElement('button');
             btn.className = "flex items-center justify-between px-3 py-1.5 rounded-xl text-xs text-slate-400 hover:bg-slate-800 transition truncate";
-            btn.innerHTML = `<span class="truncate flex items-center gap-2"><span class="w-2 h-2 rounded-full" style="background:${cal.backgroundColor || '#06b6d4'}"></span> ${cal.summary}</span>`;
+            btn.innerHTML = `<span class="truncate flex items-center gap-2"><span class="w-2 h-2 rounded-full" style="background:${cal.backgroundColor || '#06b6d4'}"></span> ${escapeHtml(cal.summary)}</span>`;
             btn.onclick = () => {
               setFilter('cal_' + cal.id);
             };
@@ -304,30 +419,40 @@
           });
         }
 
+        // Очищаем старые Google-задачи из памяти перед загрузкой свежих, чтобы исключить дубли
+        state.tasks = state.tasks.filter(t => !t.isGoogle);
+
         for (const cal of items) {
-          const evRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?singleEvents=false`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          if (!evRes.ok) continue;
+          const evRes = await authFetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?singleEvents=false`);
+          if (!evRes || !evRes.ok) continue;
           const evData = await evRes.json();
           const evts = evData.items || [];
 
           evts.forEach(ev => {
-            if (!state.tasks.find(t => t.id === ev.id)) {
-              const isRecurring = Boolean(ev.recurrence && ev.recurrence.length > 0);
-              state.tasks.push({
-                id: ev.id,
-                projectId: cal.id,
-                title: ev.summary || 'Без названия',
-                date: ev.start ? (ev.start.dateTime ? ev.start.dateTime.split('T')[0] : (ev.start.date || '')) : '',
-                repeat: isRecurring ? 'recurring' : 'none',
-                completed: false,
-                isGoogle: true
-              });
+            const isRecurring = Boolean(ev.recurrence && ev.recurrence.length > 0);
+            let attachedLink = null;
+            if (ev.description) {
+              if (ev.description.includes('[DailySparkAttachment]:')) {
+                attachedLink = ev.description.split('[DailySparkAttachment]:')[1].split(/\s/)[0];
+              } else {
+                const match = ev.description.match(/https?:\/\/[^\s]+/);
+                if (match) attachedLink = match[0];
+              }
             }
+
+            state.tasks.push({
+              id: ev.id,
+              projectId: cal.id,
+              title: ev.summary || 'Без названия',
+              date: ev.start ? (ev.start.dateTime ? ev.start.dateTime.split('T')[0] : (ev.start.date || '')) : '',
+              repeat: isRecurring ? 'recurring' : 'none',
+              completed: false,
+              driveLink: attachedLink,
+              isGoogle: true
+            });
           });
         }
-        saveTasks();
+        render();
       } catch (err) {
         console.error("Ошибка загрузки данных Google:", err);
       }
@@ -351,6 +476,15 @@
         inBlock.classList.remove('flex');
       }
       if (outBlock) outBlock.classList.remove('hidden');
+
+      const avatar = document.getElementById('user-avatar');
+      if (avatar) {
+        avatar.classList.add('hidden');
+        avatar.src = '';
+      }
+      document.getElementById('user-avatar-placeholder')?.classList.remove('hidden');
+      const userName = document.getElementById('user-name');
+      if (userName) userName.innerText = 'Аккаунт подключен';
     }
 
     window.onload = () => {
@@ -365,13 +499,15 @@
           currentAccessToken = resp.access_token;
           localStorage.setItem('g_token', resp.access_token);
           showLoggedIn();
-          await loadGoogleCalendars(resp.access_token);
+          await fetchUserProfile();
+          await loadGoogleCalendars();
         }
       });
 
       if (currentAccessToken) {
         showLoggedIn();
-        loadGoogleCalendars(currentAccessToken);
+        fetchUserProfile();
+        loadGoogleCalendars();
       } else {
         tokenClient.requestAccessToken({ prompt: '' });
       }
@@ -401,4 +537,4 @@
   </script>
 </body>
 </html>
-<
+
