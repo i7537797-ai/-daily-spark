@@ -30,7 +30,7 @@
     <!-- Фильтры -->
     <div class="flex flex-col gap-1">
       <div class="text-xs font-semibold text-slate-500 uppercase px-3 mb-1">Вид</div>
-      <button onclick="setFilter('all')" id="btn-filter-all" class="flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium bg-slate-800 text-white transition">
+      <button onclick="setFilter('all')" id="btn-filter-all" class="flex items-center justify-between px-3 py-2 rounded-xl text-sm font-medium bg-slate-800 text-cyan-400 transition">
         <span class="flex items-center gap-3"><i class="fa-solid fa-list-check w-4 text-slate-400"></i> Все задачи</span>
         <span id="count-all" class="text-xs bg-slate-700/60 px-2 py-0.5 rounded-full text-slate-300">0</span>
       </button>
@@ -70,7 +70,7 @@
           <div class="overflow-hidden">
             <div class="text-sm font-semibold text-white truncate">Аккаунт подключен</div>
             <div class="text-xs text-emerald-400 flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Google Calendar
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Google Calendar & Drive
             </div>
           </div>
         </div>
@@ -92,37 +92,40 @@
 
     <!-- Поле быстрого добавления -->
     <div class="p-5 md:px-8 pb-3">
-      <form id="new-task-form" class="bg-slate-900 border border-slate-800 focus-within:border-cyan-500/50 rounded-2xl p-3 flex flex-col md:flex-row gap-3 transition">
-        <input type="text" id="task-input" placeholder="Что нужно сделать?" required
-               class="bg-transparent flex-1 text-sm text-white px-2 py-1 outline-none placeholder-slate-500">
-        <div class="flex items-center gap-2">
-          <input type="date" id="task-date" class="bg-slate-800 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg border border-slate-700/70 outline-none">
-          <button type="submit" class="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition ml-auto">
-            <i class="fa-solid fa-plus"></i> Добавить
-          </button>
+      <form id="new-task-form" class="bg-slate-900 border border-slate-800 focus-within:border-cyan-500/50 rounded-2xl p-3 flex flex-col gap-3 transition">
+        <div class="flex flex-col md:flex-row gap-3">
+          <input type="text" id="task-input" placeholder="Что нужно сделать?" required
+                 class="bg-transparent flex-1 text-sm text-white px-2 py-1 outline-none placeholder-slate-500">
+          <div class="flex items-center gap-2">
+            <input type="date" id="task-date" class="bg-slate-800 text-slate-300 text-xs px-2.5 py-1.5 rounded-lg border border-slate-700/70 outline-none">
+            <button type="submit" class="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-semibold px-4 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition ml-auto">
+              <i class="fa-solid fa-plus"></i> Добавить
+            </button>
+          </div>
+        </div>
+        
+        <!-- Google Диск ссылка -->
+        <div class="flex items-center gap-2 pt-2 border-t border-slate-800 text-xs">
+          <span class="text-slate-500 flex items-center gap-1"><i class="fa-brands fa-google-drive text-amber-400"></i> Файл/Фото:</span>
+          <input type="url" id="task-drive-link" placeholder="Вставьте ссылку на файл с Google Диска..." 
+                 class="bg-slate-800 text-slate-300 text-xs px-2.5 py-1 rounded-lg border border-slate-700/50 flex-1 outline-none placeholder-slate-600">
         </div>
       </form>
     </div>
 
     <!-- Список задач -->
-    <div id="tasks-container" class="flex-1 overflow-y-auto px-5 md:px-8 py-3 custom-scroll flex flex-col gap-2.5">
-      <!-- Задачи рендерятся через JS -->
-    </div>
+    <div id="tasks-container" class="flex-1 overflow-y-auto px-5 md:px-8 py-3 custom-scroll flex flex-col gap-2.5"></div>
   </main>
 
-  <!-- Google API SDK -->
-  <script src="https://apis.google.com/js/api.js"></script>
+  <!-- Google Identity Services -->
   <script src="https://accounts.google.com/gsi/client"></script>
 
   <script>
     const CLIENT_ID = '33202353069-b5s8l03c15o1flg67i604s428q79t81p.apps.googleusercontent.com';
-    const API_KEY = 'AIzaSyA4Q_O5h...'; // Укажи свой актуальный API Key, если он не сохранён в файле
-    const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
-    const SCOPES = 'https://www.googleapis.com/auth/calendar';
+    const SCOPES = 'https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/drive.readonly';
 
     let tokenClient;
-    let gapiInited = false;
-    let gisInited = false;
+    let currentAccessToken = localStorage.getItem('g_token') || null;
 
     let state = {
       filter: 'all',
@@ -135,8 +138,44 @@
       render();
     }
 
+    function toggleTask(id) {
+      const task = state.tasks.find(t => t.id === id);
+      if (task) {
+        task.completed = !task.completed;
+        saveTasks();
+      }
+    }
+
+    function deleteTask(id) {
+      state.tasks = state.tasks.filter(t => t.id !== id);
+      saveTasks();
+    }
+
     function setFilter(name) {
       state.filter = name;
+
+      const titleEl = document.getElementById('view-title');
+      const descEl = document.getElementById('view-desc');
+
+      if (name === 'all') {
+        titleEl.innerText = 'Все задачи';
+        descEl.innerText = 'Полный список ваших задач и планов';
+      } else if (name === 'today') {
+        titleEl.innerText = 'Сегодня';
+        descEl.innerText = 'Задачи, запланированные на сегодняшний день';
+      } else if (name === 'nodate') {
+        titleEl.innerText = 'Без срока';
+        descEl.innerText = 'Задачи без конкретной даты выполнения';
+      } else if (name === 'recurring') {
+        titleEl.innerText = 'Повторяющиеся';
+        descEl.innerText = 'Регулярные дела и события';
+      } else if (name.startsWith('cal_')) {
+        const calId = name.replace('cal_', '');
+        const cal = state.calendars.find(c => c.id === calId);
+        titleEl.innerText = cal ? cal.summary : 'Календарь';
+        descEl.innerText = 'События из выбранного календаря';
+      }
+
       ['all', 'today', 'nodate', 'recurring'].forEach(f => {
         const btn = document.getElementById(`btn-filter-${f}`);
         if (btn) {
@@ -147,23 +186,20 @@
           }
         }
       });
+
       render();
     }
 
     function render() {
       const todayStr = new Date().toISOString().split('T')[0];
-      
-      const countAll = state.tasks.length;
-      const countToday = state.tasks.filter(t => t.date === todayStr).length;
-      const countNodate = state.tasks.filter(t => !t.date).length;
-      const countRecurring = state.tasks.filter(t => t.repeat === 'recurring').length;
 
-      document.getElementById('count-all').innerText = countAll;
-      document.getElementById('count-today').innerText = countToday;
-      document.getElementById('count-nodate').innerText = countNodate;
-      document.getElementById('count-recurring').innerText = countRecurring;
+      document.getElementById('count-all').innerText = state.tasks.length;
+      document.getElementById('count-today').innerText = state.tasks.filter(t => t.date === todayStr).length;
+      document.getElementById('count-nodate').innerText = state.tasks.filter(t => !t.date).length;
+      document.getElementById('count-recurring').innerText = state.tasks.filter(t => t.repeat === 'recurring').length;
 
       const container = document.getElementById('tasks-container');
+      if (!container) return;
       container.innerHTML = '';
 
       const filtered = state.tasks.filter(t => {
@@ -187,12 +223,26 @@
         const card = document.createElement('div');
         card.className = "bg-slate-900 border border-slate-800 hover:border-slate-700/80 rounded-xl p-3 flex items-center justify-between gap-3 transition";
         card.innerHTML = `
-          <div class="flex items-center gap-3 overflow-hidden">
-            <span class="text-sm font-medium text-slate-200 truncate ${task.completed ? 'line-through text-slate-500' : ''}">${task.title}</span>
-            ${task.repeat === 'recurring' ? '<span class="text-xs bg-indigo-950 text-indigo-400 border border-indigo-800 px-2 py-0.5 rounded-full flex items-center gap-1">🔁 Повтор</span>' : ''}
-            ${task.date ? `<span class="text-xs text-slate-400 flex items-center gap-1"><i class="fa-regular fa-calendar text-[10px]"></i> ${task.date}</span>` : ''}
+          <div class="flex items-center gap-3 overflow-hidden flex-1">
+            <button onclick="toggleTask('${task.id}')" class="text-slate-500 hover:text-cyan-400 transition flex-shrink-0">
+              <i class="${task.completed ? 'fa-solid fa-circle-check text-cyan-400' : 'fa-regular fa-circle'} text-base"></i>
+            </button>
+            <div class="flex flex-col truncate">
+              <span onclick="toggleTask('${task.id}')" class="cursor-pointer text-sm font-medium truncate ${task.completed ? 'line-through text-slate-500' : 'text-slate-200'}">
+                ${task.title}
+              </span>
+              <div class="flex items-center gap-2 mt-0.5 flex-wrap">
+                ${task.repeat === 'recurring' ? '<span class="text-[10px] bg-indigo-950 text-indigo-400 border border-indigo-800 px-2 py-0.5 rounded-full flex items-center gap-1">🔁 Повтор</span>' : ''}
+                ${task.date ? `<span class="text-[11px] text-slate-400 flex items-center gap-1"><i class="fa-regular fa-calendar text-[10px]"></i> ${task.date}</span>` : ''}
+                ${task.driveLink ? `
+                  <a href="${task.driveLink}" target="_blank" rel="noopener noreferrer" class="text-[11px] bg-slate-800 text-amber-300 hover:text-amber-200 border border-slate-700/70 px-2 py-0.5 rounded flex items-center gap-1 transition">
+                    <i class="fa-brands fa-google-drive"></i> Файл/Фото
+                  </a>
+                ` : ''}
+              </div>
+            </div>
           </div>
-          <button onclick="deleteTask('${task.id}')" class="text-slate-500 hover:text-red-400 p-1 transition">
+          <button onclick="deleteTask('${task.id}')" class="text-slate-500 hover:text-red-400 p-1 transition flex-shrink-0">
             <i class="fa-regular fa-trash-can text-sm"></i>
           </button>
         `;
@@ -200,80 +250,68 @@
       });
     }
 
-    function deleteTask(id) {
-      state.tasks = state.tasks.filter(t => t.id !== id);
-      saveTasks();
-    }
-
     document.getElementById('new-task-form').addEventListener('submit', (e) => {
       e.preventDefault();
       const input = document.getElementById('task-input');
       const date = document.getElementById('task-date').value;
+      const driveLink = document.getElementById('task-drive-link').value;
       if (!input.value.trim()) return;
 
       state.tasks.push({
         id: 'task_' + Date.now(),
+        projectId: state.filter.startsWith('cal_') ? state.filter.replace('cal_', '') : null,
         title: input.value.trim(),
         date: date || '',
         repeat: 'none',
-        completed: false
+        completed: false,
+        driveLink: driveLink.trim() || null
       });
+
       input.value = '';
       document.getElementById('task-date').value = '';
+      document.getElementById('task-drive-link').value = '';
       saveTasks();
     });
 
-    // Google Calendar API
-    function gapiLoaded() {
-      gapi.load('client', async () => {
-        await gapi.client.init({
-          apiKey: API_KEY,
-          discoveryDocs: [DISCOVERY_DOC],
-        });
-        gapiInited = true;
-      });
-    }
-
-    function gisLoaded() {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: async (resp) => {
-          if (resp.error) throw resp;
-          document.getElementById('auth-logged-out').classList.add('hidden');
-          document.getElementById('auth-logged-in').classList.remove('hidden');
-          await loadGoogleCalendars();
-        }
-      });
-      gisInited = true;
-    }
-
-    async function loadGoogleCalendars() {
+    async function loadGoogleCalendars(token) {
       try {
-        const res = await gapi.client.calendar.calendarList.list();
-        const items = res.result.items || [];
+        const calRes = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (calRes.status === 401) {
+          localStorage.removeItem('g_token');
+          currentAccessToken = null;
+          showLoggedOut();
+          return;
+        }
+
+        const calData = await calRes.json();
+        const items = calData.items || [];
         state.calendars = items;
 
         const calList = document.getElementById('calendars-list');
-        calList.innerHTML = '';
-        items.forEach(cal => {
-          const btn = document.createElement('button');
-          btn.className = "flex items-center justify-between px-3 py-1.5 rounded-xl text-xs text-slate-400 hover:bg-slate-800 transition truncate";
-          btn.innerHTML = `<span class="truncate flex items-center gap-2"><span class="w-2 h-2 rounded-full" style="background:${cal.backgroundColor || '#06b6d4'}"></span> ${cal.summary}</span>`;
-          btn.onclick = () => {
-            state.filter = 'cal_' + cal.id;
-            render();
-          };
-          calList.appendChild(btn);
-        });
-
-        // Загрузка событий без дублирования (singleEvents: false)
-        for (const cal of items) {
-          const eventsRes = await gapi.client.calendar.events.list({
-            calendarId: cal.id,
-            singleEvents: false
+        if (calList) {
+          calList.innerHTML = '';
+          items.forEach(cal => {
+            const btn = document.createElement('button');
+            btn.className = "flex items-center justify-between px-3 py-1.5 rounded-xl text-xs text-slate-400 hover:bg-slate-800 transition truncate";
+            btn.innerHTML = `<span class="truncate flex items-center gap-2"><span class="w-2 h-2 rounded-full" style="background:${cal.backgroundColor || '#06b6d4'}"></span> ${cal.summary}</span>`;
+            btn.onclick = () => {
+              setFilter('cal_' + cal.id);
+            };
+            calList.appendChild(btn);
           });
-          const evts = eventsRes.result.items || [];
+        }
+
+        for (const cal of items) {
+          const evRes = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?singleEvents=false`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+          });
+          if (!evRes.ok) continue;
+          const evData = await evRes.json();
+          const evts = evData.items || [];
+
           evts.forEach(ev => {
             if (!state.tasks.find(t => t.id === ev.id)) {
               const isRecurring = Boolean(ev.recurrence && ev.recurrence.length > 0);
@@ -290,34 +328,77 @@
           });
         }
         saveTasks();
-      } catch (e) {
-        console.error("Ошибка загрузки календаря:", e);
+      } catch (err) {
+        console.error("Ошибка загрузки данных Google:", err);
       }
     }
 
-    document.getElementById('auth-btn').onclick = () => {
-      if (tokenClient) tokenClient.requestAccessToken();
-    };
-
-    document.getElementById('signout-btn').onclick = () => {
-      const token = gapi.client.getToken();
-      if (token !== null) {
-        google.accounts.oauth2.revoke(token.access_token);
-        gapi.client.setToken('');
+    function showLoggedIn() {
+      const outBlock = document.getElementById('auth-logged-out');
+      const inBlock = document.getElementById('auth-logged-in');
+      if (outBlock) outBlock.classList.add('hidden');
+      if (inBlock) {
+        inBlock.classList.remove('hidden');
+        inBlock.classList.add('flex');
       }
-      localStorage.removeItem('daily_spark_tasks');
-      state.tasks = [];
-      document.getElementById('auth-logged-in').classList.add('hidden');
-      document.getElementById('auth-logged-out').classList.remove('hidden');
-      document.getElementById('calendars-list').innerHTML = '';
-      render();
-    };
+    }
+
+    function showLoggedOut() {
+      const inBlock = document.getElementById('auth-logged-in');
+      const outBlock = document.getElementById('auth-logged-out');
+      if (inBlock) {
+        inBlock.classList.add('hidden');
+        inBlock.classList.remove('flex');
+      }
+      if (outBlock) outBlock.classList.remove('hidden');
+    }
 
     window.onload = () => {
-      gapiLoaded();
-      gisLoaded();
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: async (resp) => {
+          if (resp.error) {
+            showLoggedOut();
+            return;
+          }
+          currentAccessToken = resp.access_token;
+          localStorage.setItem('g_token', resp.access_token);
+          showLoggedIn();
+          await loadGoogleCalendars(resp.access_token);
+        }
+      });
+
+      if (currentAccessToken) {
+        showLoggedIn();
+        loadGoogleCalendars(currentAccessToken);
+      } else {
+        tokenClient.requestAccessToken({ prompt: '' });
+      }
+
+      const authBtn = document.getElementById('auth-btn');
+      if (authBtn) {
+        authBtn.onclick = () => {
+          tokenClient.requestAccessToken({ prompt: 'select_account' });
+        };
+      }
+
+      const signoutBtn = document.getElementById('signout-btn');
+      if (signoutBtn) {
+        signoutBtn.onclick = () => {
+          localStorage.removeItem('g_token');
+          currentAccessToken = null;
+          state.tasks = state.tasks.filter(t => !t.isGoogle);
+          saveTasks();
+          showLoggedOut();
+          const calList = document.getElementById('calendars-list');
+          if (calList) calList.innerHTML = '';
+        };
+      }
+
       render();
     };
   </script>
 </body>
 </html>
+<
