@@ -14,6 +14,7 @@
       --primary-hover: #1d4ed8;
       --border: #e2e8f0;
       --danger: #ef4444;
+      --success: #16a34a;
     }
 
     * {
@@ -42,11 +43,40 @@
 
     header {
       margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
     }
 
     h1 {
       font-size: 1.4rem;
       margin: 0;
+    }
+
+    .sync-btn {
+      background: #f1f5f9;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .sync-btn:hover {
+      background: #e2e8f0;
+    }
+
+    .sync-btn.connected {
+      border-color: var(--success);
+      color: var(--success);
     }
 
     .project-filter {
@@ -224,6 +254,11 @@
       white-space: nowrap;
     }
 
+    .badge.calendar {
+      background: #dcfce7;
+      color: #15803d;
+    }
+
     .task-actions {
       display: flex;
       align-items: center;
@@ -284,12 +319,15 @@
       }
     }
   </style>
+  <!-- Официальная библиотека авторизации Google Identity Services -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
 <div class="container">
   <header>
     <h1>Планировщик дел</h1>
+    <button class="sync-btn" id="syncCalendarBtn">📅 Синхронизировать Календарь</button>
   </header>
 
   <div class="project-filter" id="projectFilter"></div>
@@ -314,6 +352,16 @@
 </div>
 
 <script>
+  // Конфигурация Google API из твоей заметки
+  const CLIENT_ID = '113453139171-s49a76tbe66vnr83li0qmi3gq5khh2i0.apps.googleusercontent.com';
+  const API_KEY = 'AIzaSyDeBzSQ68co2rZOMVpFA4HgMQ1TidKtMG4';
+  const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest';
+  const SCOPES = 'https://www.googleapis.com/auth/calendar.events.readonly';
+
+  let tokenClient;
+  let gapiInited = false;
+  let gisInited = false;
+
   let projects = JSON.parse(localStorage.getItem('my_projects')) || ['Личное', 'Дом', 'Учёба'];
   let tasks = JSON.parse(localStorage.getItem('my_tasks')) || [];
   let currentFilter = 'Все';
@@ -390,7 +438,8 @@
       project,
       driveLink: rawDriveLink ? sanitizeUrl(rawDriveLink) : '',
       repeat,
-      completed: false
+      completed: false,
+      source: 'local'
     });
 
     titleInput.value = '';
@@ -509,7 +558,7 @@
       metaDiv.className = 'task-meta';
 
       const badge = document.createElement('span');
-      badge.className = 'badge';
+      badge.className = `badge ${task.source === 'google' ? 'calendar' : ''}`;
       badge.textContent = task.project;
       metaDiv.appendChild(badge);
 
@@ -543,13 +592,15 @@
         actionsDiv.appendChild(driveA);
       }
 
-      const calA = document.createElement('a');
-      calA.href = getGCalLink(task);
-      calA.target = '_blank';
-      calA.rel = 'noopener noreferrer';
-      calA.className = 'link-btn';
-      calA.textContent = '📅 Календарь';
-      actionsDiv.appendChild(calA);
+      if (task.source !== 'google') {
+        const calA = document.createElement('a');
+        calA.href = getGCalLink(task);
+        calA.target = '_blank';
+        calA.rel = 'noopener noreferrer';
+        calA.className = 'link-btn';
+        calA.textContent = '📅 Календарь';
+        actionsDiv.appendChild(calA);
+      }
 
       const delBtn = document.createElement('button');
       delBtn.className = 'del-btn';
@@ -563,9 +614,109 @@
     });
   }
 
+  // --- ИНТЕГРАЦИЯ GOOGLE КАЛЕНДАРЯ ---
+
+  function initTokenClient() {
+    if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: async (resp) => {
+          if (resp.error !== undefined) {
+            throw resp;
+          }
+          await fetchCalendarEvents(resp.access_token);
+        },
+      });
+    }
+  }
+
+  async function fetchCalendarEvents(accessToken) {
+    const syncBtn = document.getElementById('syncCalendarBtn');
+    syncBtn.textContent = '⏳ Загрузка...';
+
+    const now = new Date();
+    const timeMin = now.toISOString();
+
+    try {
+      const response = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&singleEvents=true&orderBy=startTime&maxResults=20`,
+        {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+          }
+        }
+      );
+
+      const data = await response.json();
+      if (data.items && data.items.length > 0) {
+        let addedCount = 0;
+        data.items.forEach(event => {
+          const eventTitle = event.summary || 'Без названия';
+          const eventId = `gcal_${event.id}`;
+          
+          // Проверяем, нет ли уже такого события в списке
+          const exists = tasks.some(t => t.calendarEventId === eventId || (t.title === eventTitle && t.source === 'google'));
+          
+          if (!exists) {
+            let taskTime = '';
+            if (event.start && event.start.dateTime) {
+              const d = new Date(event.start.dateTime);
+              taskTime = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+
+            tasks.push({
+              id: Date.now() + Math.random(),
+              calendarEventId: eventId,
+              title: eventTitle,
+              time: taskTime,
+              project: 'Календарь',
+              driveLink: '',
+              repeat: 'none',
+              completed: false,
+              source: 'google'
+            });
+            addedCount++;
+          }
+        });
+
+        // Добавляем категорию "Календарь" в фильтры, если ещё нет
+        if (!projects.includes('Календарь')) {
+          projects.push('Календарь');
+          saveProjects();
+        } else {
+          saveTasks();
+        }
+
+        syncBtn.textContent = `✅ Загружено (+${addedCount})`;
+        syncBtn.classList.add('connected');
+      } else {
+        syncBtn.textContent = '✅ Нет новых событий';
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки календаря:', err);
+      syncBtn.textContent = '❌ Ошибка доступа';
+    }
+  }
+
+  document.getElementById('syncCalendarBtn').onclick = () => {
+    if (!tokenClient) {
+      initTokenClient();
+    }
+    if (tokenClient) {
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    } else {
+      alert('Библиотека Google ещё загружается, подождите пару секунд...');
+    }
+  };
+
   document.getElementById('addTaskBtn').onclick = addTask;
   document.getElementById('taskInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') addTask();
+  });
+
+  window.addEventListener('load', () => {
+    setTimeout(initTokenClient, 1000);
   });
 
   checkDailyReset();
@@ -574,4 +725,5 @@
 </script>
 
 </body>
-  </html>    
+</html>
+   
